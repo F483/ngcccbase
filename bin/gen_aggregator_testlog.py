@@ -5,7 +5,7 @@ import pyjsonrpc
 import json
 
 PROCESS_BLOCKS = 20 # TODO get from arg
-MIN_OCCURANCES = 2 # TODO get from arg
+MIN_OCCURANCES = 3 # TODO get from arg
 
 rpc = pyjsonrpc.HttpClient(
   url = "http://127.0.0.1:8332", # TODO testnet option
@@ -13,7 +13,7 @@ rpc = pyjsonrpc.HttpClient(
   password = "bitcoinrpcpass"
 )
 
-logs = []
+txrequests = []
 occurances = {}
 getcount = lambda address: occurances.get(address) and occurances[address] or 0
 
@@ -28,14 +28,14 @@ def process_tx(txid):
     src = srctransaction["vout"][srcvout]["scriptPubKey"]["addresses"][0]
     result = []
     for out in transaction["vout"]:
-      log = {
+      txrequest = {
         "src" : src, 
         "dest" : out["scriptPubKey"]["addresses"][0],
         "amount" : out["value"]
       }
-      occurances[log["src"]] = getcount(log["src"]) + 1
-      occurances[log["dest"]] = getcount(log["dest"]) + 1
-      result.append(log)
+      occurances[txrequest["src"]] = getcount(txrequest["src"]) + 1
+      occurances[txrequest["dest"]] = getcount(txrequest["dest"]) + 1
+      result.append(txrequest)
     return result
   except: # ignore everything else
     return []
@@ -45,19 +45,17 @@ blockcount = rpc.getblockcount()
 blockindexes = range(blockcount + 1 - PROCESS_BLOCKS, blockcount + 1)
 for blockhash in map(rpc.getblockhash, blockindexes):
   for txid in rpc.getblock(blockhash)["tx"]:
-    logs += process_tx(txid)
+    txrequests += process_tx(txid)
 
 # filter occurances
-def minoccurances(log):
+#print len(txrequests) # BEFORE
+def minoccurances(txrequest):
   return (
-    occurances[log["src"]] >= MIN_OCCURANCES or 
-    occurances[log["dest"]] >= MIN_OCCURANCES
+    occurances[txrequest["src"]] >= MIN_OCCURANCES or 
+    occurances[txrequest["dest"]] >= MIN_OCCURANCES
   )
-print len(logs)
-logs = filter(minoccurances, logs)
+txrequests = filter(minoccurances, txrequests)
+#print len(txrequests) # AFTER
 
-# print output
-print json.dumps({
-  "logs" : logs
-})
+print json.dumps(txrequests)
 
