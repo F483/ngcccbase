@@ -10,7 +10,7 @@ from decimal import Decimal
 # TODO get settings from args
 TESTNET = False
 TXFEE = Decimal('0.0001') # transaction fee per input address
-AGGROGATION_LIMIT = 20 # max number of txrequests per aggregation
+AGGROGATION_LIMIT = 2 # max number of txrequests per aggregation
 MIN_CONFIRMS = 1 # number of confirmations required for utxo inptus
 RPC_USER = "bitcoinrpcuser"
 RPC_PASS = "bitcoinrpcpass"
@@ -74,8 +74,8 @@ def _get_unspent_blockchain_info(address):
     raise
 
 def get_unspent(address):
+  # TODO add amount needed and get smallest number of utxo to reduce size
   return _get_unspent_blockchain_info(address)
-
 
 def _sum_unspents(unspents):
   return sum(map(lambda x: Decimal(str(x["amount"])), unspents))
@@ -120,9 +120,60 @@ def aggregate(txrequests):
       "savings" : savings,
   }
 
+class TxRequestPool(object):
+
+  def __init__(self, txrequests, limit):
+    self.limit = limit
+    self.txrequests = txrequests
+    addresses = map(lambda x: [x["src"], x["dest"]], txrequests)
+    self.addresses = set(reduce(lambda a, b: a + b, addresses))
+
+  def intersects(self, other):
+    return bool(self.addresses.intersection(other.addresses))
+
+  def size(self):
+    return len(self.txrequests)
+
+  def can_merge(self, other):
+    return self.size() + other.size() <= self.limit
+
+  def update(self, other):
+    self.txrequests += other.txrequests
+    addresses = map(lambda x: [x["src"], x["dest"]], self.txrequests)
+    self.addresses = set(reduce(lambda a, b: a + b, addresses))
+
+  def __str__(self):
+    return str({ 
+        "limit" : self.limit, 
+        "txrequests" : self.txrequests, 
+        "addresses" : self.addresses 
+    })
+
+def find_candidate(pools, other, mustintersect):
+  for pool in pools:
+    if pool.can_merge(other) and mustintersect and pool.intersects(other):
+      return pool
+    elif not mustintersect and pool.can_merge(other):
+      return pool
+  return None
+
+def merge_pools(pools, mustintersect):
+  newpools = []
+  for pool in pools:
+    candidate = find_candidate(newpools, pool, mustintersect)
+    if candidate:
+      candidate.update(pool)
+    else:
+      newpools.append(pool)
+  if len(newpools) == len(pools):
+    return newpools # stop recursion when nothing merged
+  return merge_pools(newpools, mustintersect)
+
 def partition(txrequests, limit):
-  # TODO partition under limit and group resends to save fees in aggregation
-  return [txrequests]
+  pools = map(lambda x: TxRequestPool([x], limit), txrequests)
+  pools = merge_pools(pools, True) # pool chains
+  pools = merge_pools(pools, False) # fill pools
+  return map(lambda x: x.txrequests, pools)
 
 def gentransaction(aggregation):
   reformat = lambda x: { "txid" : x["txid"], "vout" : x["vout"] }
@@ -132,12 +183,17 @@ def gentransaction(aggregation):
   # TODO sign transactions
   return rawtx
 
-def compress(txrequests, aggrogation_limit):
-  aggrogations = map(aggregate, partition(txrequests, aggrogation_limit))
-  return map(gentransaction, aggrogations)
+def compress(txrequests, aggregation_limit):
+  chunks = partition(txrequests, aggregation_limit)
+  aggregations = map(aggregate, chunks)
+  # TODO log saved_fees
+  #saved_fees = sum(map(lambda x: x["savings"], aggregations))
+  #print saved_fees
+  return map(gentransaction, aggregations)
 
 if __name__ == "__main__":
   txrequests = json.load(sys.stdin)
   transactions = compress(txrequests, AGGROGATION_LIMIT)
-  print transactions
+  # TODO send transactions
+  print json.dumps(transactions)
 

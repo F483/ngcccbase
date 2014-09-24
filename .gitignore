@@ -1,7 +1,6 @@
 # ngccc data
 mainnet.wallet
 color.db
-/data
 
 # setuptools files
 ngcccbase.egg-info
