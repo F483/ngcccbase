@@ -4,7 +4,7 @@
 import pyjsonrpc
 import json
 
-PROCESS_BLOCKS = 20 # TODO get from arg
+PROCESS_BLOCKS = 1 # TODO get from arg
 MIN_OCCURANCES = 3 # TODO get from arg
 
 rpc = pyjsonrpc.HttpClient(
@@ -48,14 +48,12 @@ for blockhash in map(rpc.getblockhash, blockindexes):
     txrequests += process_tx(txid)
 
 # filter occurances
-#print len(txrequests) # BEFORE
 def minoccurances(txrequest):
   return (
     occurances[txrequest["src"]] >= MIN_OCCURANCES or 
     occurances[txrequest["dest"]] >= MIN_OCCURANCES
   )
 txrequests = filter(minoccurances, txrequests)
-#print len(txrequests) # AFTER
 
 print json.dumps(txrequests)
 

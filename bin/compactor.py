@@ -6,7 +6,14 @@ import json
 import urllib2
 from decimal import Decimal
 
-LIMIT = 20 # get from args
+# get settings from args
+TXFEE = Decimal('0.0001') # transaction fee per input address
+LIMIT = 20 # max number of inputs/outputs per transaction
+MIN_CONFIRMS = 1 # number of confirmations required for utxo inptus
+
+
+def _satoshi_to_btc(satoshi):
+   return satoshi / Decimal("10") ** Decimal("8")
 
 def _get_deltas(txrequests):
   deltas = {}
@@ -31,11 +38,12 @@ def _get_utxo(address):
         "address": address,
         "txid": output['tx_hash'],
         "vout": output['tx_output_n'],
-        "amount": output['value'],
+        "amount": _satoshi_to_btc(Decimal(output['value'])),
         "script": output['script'],
       }
-    data = json.loads(urllib2.urlopen(url).read())
-    return map(reformat, data['unspent_outputs'])
+    outputs = json.loads(urllib2.urlopen(url).read())['unspent_outputs']
+    outputs = filter(lambda x: x["confirmations"] >= MIN_CONFIRMS, outputs)
+    return map(reformat, outputs)
   except urllib2.HTTPError as e:
     if e.code == 500:
       return []
@@ -56,16 +64,33 @@ def compress(txrequests):
   dests_deltas = filter(lambda x: x[1] > Decimal("0"), deltas)
   src_unspents = map(lambda x: (x[0], _get_utxo(x[0])), src_deltas)
   src_balances = dict(map(lambda x: (x[0], _sum_unspents(x[1])), src_unspents))
-  src_changes = map(lambda x: (x[0], src_balances[x[0]] + x[1]), src_deltas)
+
+  # tx fee only for net senders, thus encuraging paying it forward
+  get_change = lambda x: (x[0], src_balances[x[0]] + x[1] - TXFEE)
+  src_changes = map(lambda x: get_change(x), src_deltas)
   src_changes = filter(lambda x: x[1] > Decimal("0"), src_changes)
+
   inputs = reduce(lambda a, b: a + b, map(lambda x: x[1], src_unspents))
   outputs = dests_deltas + src_changes
-  return { "inputs" : inputs, "outputs" : outputs }
+  input_amount = sum(map(lambda x: x["amount"], inputs))
+  output_amount = sum(map(lambda x: x[1], outputs))
+  fees = input_amount - output_amount
+  savings = (TXFEE * len(txrequests)) - fees
+  return {
+      "inputs" : inputs, 
+      "outputs" : outputs, 
+      "fees" : fees, 
+      "input_amount" : input_amount,
+      "output_amount" : output_amount,
+      "savings" : savings,
+  }
 
 def partition(transaction, limit):
-  pass # TODO
+  pass # TODO recursivly partition until under limit
 
 if __name__ == "__main__":
+  #print json.load(sys.stdin)
   transaction = compress(json.load(sys.stdin))
-  print partition(transaction, LIMIT)
+  print transaction
+  #print partition(transaction, LIMIT)
 
