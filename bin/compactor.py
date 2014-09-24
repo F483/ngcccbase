@@ -3,14 +3,23 @@
 
 import sys
 import json
+import pyjsonrpc
 import urllib2
 from decimal import Decimal
 
-# get settings from args
+# TODO get settings from args
+TESTNET = False
 TXFEE = Decimal('0.0001') # transaction fee per input address
-LIMIT = 20 # max number of inputs/outputs per transaction
+AGGROGATION_LIMIT = 20 # max number of txrequests per aggregation
 MIN_CONFIRMS = 1 # number of confirmations required for utxo inptus
+RPC_USER = "bitcoinrpcuser"
+RPC_PASS = "bitcoinrpcpass"
 
+rpc = pyjsonrpc.HttpClient(
+  url = (TESTNET and "http://127.0.0.1:18332" or "http://127.0.0.1:8332"),
+  username = RPC_USER,
+  password = RPC_PASS
+)
 
 def _satoshi_to_btc(satoshi):
    return satoshi / Decimal("10") ** Decimal("8")
@@ -29,7 +38,22 @@ def _get_deltas(txrequests):
     deltas[dest] = destdelta + amount
   return deltas
 
-def _get_utxo(address):
+def _get_unspent_rpc(address):
+  unspents = rpc.listunspent() # TODO worth cashing
+  def usable(unspent):
+    correctaddress = unspent["address"] == address
+    hasminconfirms = unspent["confirmations"] >= MIN_CONFIRMS
+    return correctaddress and hasminconfirms
+  unspents = filter(usable, unspents)
+  def reformat(unspent):
+    return { 
+        'amount': Decimal(str(unspent["amount"])), 
+        'txid': unpsent["txid"], 
+        'vout': unspent["vout"] 
+    }
+  return map(reformat, unspents)
+
+def _get_unspent_blockchain_info(address):
   # source ngcccbase/services/blockchain.py
   url = "https://blockchain.info/unspent?active=%s" % address
   try:
@@ -49,20 +73,31 @@ def _get_utxo(address):
       return []
     raise
 
+def get_unspent(address):
+  return _get_unspent_blockchain_info(address)
+
+
 def _sum_unspents(unspents):
   return sum(map(lambda x: Decimal(str(x["amount"])), unspents))
 
-def compress(txrequests):
+def aggregate(txrequests):
   """
   Very simple implementation that assumes all requests are not malacious ...
   Args:
-      txrequests: [{ "src" : src, "dest" : dest, "amount" : amount }, ...]
-      limit: the grouping size limit
+      txrequests: [{ "src" : src, "dest" : dest, "amount" : amount }]
+  Returns: {
+      "inputs" : [{ 'amount': Decimal, 'txid': str, 'vout': int }],
+      "outputs" : (address, amount),
+      "fees" : Decimal,
+      "input_amount" : Decimal,
+      "output_amount" : Decimal,
+      "savings" : Decimal,
+  }
   """
   deltas = _get_deltas(txrequests).items()
   src_deltas = filter(lambda x: x[1] < Decimal("0"), deltas)
   dests_deltas = filter(lambda x: x[1] > Decimal("0"), deltas)
-  src_unspents = map(lambda x: (x[0], _get_utxo(x[0])), src_deltas)
+  src_unspents = map(lambda x: (x[0], get_unspent(x[0])), src_deltas)
   src_balances = dict(map(lambda x: (x[0], _sum_unspents(x[1])), src_unspents))
 
   # tx fee only for net senders, thus encuraging paying it forward
@@ -77,20 +112,32 @@ def compress(txrequests):
   fees = input_amount - output_amount
   savings = (TXFEE * len(txrequests)) - fees
   return {
-      "inputs" : inputs, 
-      "outputs" : outputs, 
-      "fees" : fees, 
+      "inputs" : inputs,
+      "outputs" : outputs,
+      "fees" : fees,
       "input_amount" : input_amount,
       "output_amount" : output_amount,
       "savings" : savings,
   }
 
-def partition(transaction, limit):
-  pass # TODO recursivly partition until under limit
+def partition(txrequests, limit):
+  # TODO partition under limit and group resends to save fees in aggregation
+  return [txrequests]
+
+def gentransaction(aggregation):
+  reformat = lambda x: { "txid" : x["txid"], "vout" : x["vout"] }
+  inputs = map(reformat, aggregation["inputs"])
+  outputs = dict(map(lambda x: (x[0], float(x[1])), aggregation["outputs"]))
+  rawtx = rpc.createrawtransaction(inputs, outputs)
+  # TODO sign transactions
+  return rawtx
+
+def compress(txrequests, aggrogation_limit):
+  aggrogations = map(aggregate, partition(txrequests, aggrogation_limit))
+  return map(gentransaction, aggrogations)
 
 if __name__ == "__main__":
-  #print json.load(sys.stdin)
-  transaction = compress(json.load(sys.stdin))
-  print transaction
-  #print partition(transaction, LIMIT)
+  txrequests = json.load(sys.stdin)
+  transactions = compress(txrequests, AGGROGATION_LIMIT)
+  print transactions
 
